@@ -31,7 +31,7 @@ export const mysql2Adapter = (
 		: null;
 	const ESCAPED_KEY_TABLE_NAME = escapeName(tables.key);
 	return (LuciaError) => {
-		return {
+		const adapter: Adapter = {
 			getUser: async (userId) => {
 				const result = await get<UserSchema>(
 					db.query(`SELECT * FROM ${ESCAPED_USER_TABLE_NAME} WHERE id = ?`, [
@@ -252,6 +252,7 @@ export const mysql2Adapter = (
 				return [sessionResult, userResult];
 			}
 		};
+		return adapter;
 	};
 };
 
@@ -309,7 +310,7 @@ const transaction = async <
 >(
 	db: Pool | Connection,
 	execute: _Execute
-) => {
+): Promise<void> => {
 	if (isPool(db)) {
 		const connection = await db.getConnection();
 		try {

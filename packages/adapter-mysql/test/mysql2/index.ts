@@ -8,29 +8,31 @@ import { TABLE_NAMES } from "../shared.js";
 
 import type { QueryHandler, TableQueryHandler } from "@lucia-auth/adapter-test";
 
-const createTableQueryHandler = (tableName: string): TableQueryHandler => {
-	const ESCAPED_TABLE_NAME = escapeName(tableName);
-	return {
-		get: async () => {
-			return await getAll(pool.query(`SELECT * FROM ${ESCAPED_TABLE_NAME}`));
-		},
-		insert: async (value: any) => {
-			const [fields, placeholders, args] = helper(value);
-			await pool.execute(
-				`INSERT INTO ${ESCAPED_TABLE_NAME} ( ${fields} ) VALUES ( ${placeholders} )`,
-				args
-			);
-		},
-		clear: async () => {
-			await pool.execute(`DELETE FROM ${ESCAPED_TABLE_NAME}`);
-		}
+class MySQL2TableQueryHandler implements TableQueryHandler {
+	constructor(tableName: string) {
+		this.escapedTableName = escapeName(tableName);
+	}
+	private escapedTableName: string;
+
+	public get = async (): Promise<any[]> => {
+		return await getAll(pool.query(`SELECT * FROM ${this.escapedTableName}`));
 	};
-};
+	public insert = async (value: any): Promise<void> => {
+		const [fields, placeholders, args] = helper(value);
+		await pool.execute(
+			`INSERT INTO ${this.escapedTableName} ( ${fields} ) VALUES ( ${placeholders} )`,
+			args
+		);
+	};
+	public clear = async (): Promise<void> => {
+		await pool.execute(`DELETE FROM ${this.escapedTableName}`);
+	};
+}
 
 const queryHandler: QueryHandler = {
-	user: createTableQueryHandler(TABLE_NAMES.user),
-	session: createTableQueryHandler(TABLE_NAMES.session),
-	key: createTableQueryHandler(TABLE_NAMES.key)
+	user: new MySQL2TableQueryHandler(TABLE_NAMES.user),
+	session: new MySQL2TableQueryHandler(TABLE_NAMES.session),
+	key: new MySQL2TableQueryHandler(TABLE_NAMES.key)
 };
 
 const adapter = mysql2Adapter(pool, TABLE_NAMES)(LuciaError);

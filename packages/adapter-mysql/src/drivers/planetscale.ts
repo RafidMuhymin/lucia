@@ -26,9 +26,8 @@ export const planetscaleAdapter = (
 		? escapeName(tables.session)
 		: null;
 	const ESCAPED_KEY_TABLE_NAME = escapeName(tables.key);
-
 	return (LuciaError) => {
-		return {
+		const adapter: Adapter = {
 			getUser: async (userId) => {
 				const result = await get<UserSchema>(
 					connection.execute(
@@ -242,6 +241,7 @@ export const planetscaleAdapter = (
 				return [transformPlanetscaleSession(sessionResult), userResult];
 			}
 		};
+		return adapter;
 	};
 };
 
@@ -264,8 +264,8 @@ export type PlanetscaleSession = Omit<
 	SessionSchema,
 	"active_expires" | "idle_expires"
 > & {
-	active_expires: BigInt;
-	idle_expires: BigInt;
+	active_expires: bigint;
+	idle_expires: bigint;
 };
 
 export const transformPlanetscaleSession = (
