@@ -21,7 +21,7 @@ export const mongooseAdapter = (models: {
 }): InitializeAdapter<Adapter> => {
 	const { User, Session, Key } = models;
 	return (LuciaError) => {
-		return {
+		const adapter: Adapter = {
 			getUser: async (userId: string) => {
 				const userDoc = await User.findById(userId, DEFAULT_PROJECTION).lean();
 				if (!userDoc) return null;
@@ -83,11 +83,10 @@ export const mongooseAdapter = (models: {
 				).lean();
 				return sessions.map((val) => transformSessionDoc(val));
 			},
-			getSessionAndUserBySessionId: async (sessionId: string) => {
+			getSessionAndUser: async (sessionId: string) => {
 				if (!Session) {
 					throw new Error("Session model not defined");
 				}
-
 				const sessionUsers = await Session.aggregate([
 					{ $match: { _id: sessionId } },
 					{
@@ -101,18 +100,14 @@ export const mongooseAdapter = (models: {
 						}
 					}
 				]).exec();
-
 				const sessionUser = sessionUsers?.at(0) ?? null;
-				if (!sessionUser) return null;
-
+				if (!sessionUser) return [null, null];
 				const { userDocs, ...sessionDoc } = sessionUser;
 				const userDoc = userDocs?.at(0) ?? null;
-				if (!userDoc) return null;
-
-				return {
-					user: transformUserDoc(userDoc),
-					session: transformSessionDoc(sessionDoc)
-				};
+				if (!userDoc) return [null, null];
+				const session = transformSessionDoc(sessionDoc);
+				const user = transformUserDoc(userDoc);
+				return [session, user];
 			},
 			setSession: async (session) => {
 				if (!Session) {
@@ -189,10 +184,13 @@ export const mongooseAdapter = (models: {
 				}).lean();
 			}
 		};
+		return adapter;
 	};
 };
 
-export const createMongoValues = (object: Record<any, any>) => {
+export const createMongoValues = (
+	object: Record<any, any>
+): Record<string, any> => {
 	return Object.fromEntries(
 		Object.entries(object).map(([key, value]) => {
 			if (key === "id") return ["_id", value];

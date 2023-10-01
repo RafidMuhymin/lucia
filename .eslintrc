@@ -6,15 +6,24 @@
 		"prettier"
 	],
 	"rules": {
-		"@typescript-eslint/no-unused-vars": "off",
+		"@typescript-eslint/no-unused-vars": "error",
 		"@typescript-eslint/no-explicit-any": "off",
-		"@typescript-eslint/no-empty-function": "off",
-		"@typescript-eslint/ban-types": "off",
+		"@typescript-eslint/no-empty-function": "error",
+		"@typescript-eslint/ban-types": [
+			"error",
+			{
+				"types": {
+					"{}": false
+				},
+				"extendDefaults": true
+			}
+		],
 		"@typescript-eslint/no-empty-interface": "off",
+		"@typescript-eslint/explicit-function-return-type": "error",
 		"no-async-promise-executor": "off",
-		"no-useless-catch": "off"
+		"no-useless-catch": "error"
 	},
 	"parser": "@typescript-eslint/parser",
 	"plugins": ["@typescript-eslint"],
-	"ignorePatterns": ["*.cjs"]
+	"ignorePatterns": ["*.cjs", "*.js"]
 }

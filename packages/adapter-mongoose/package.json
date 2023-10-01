@@ -11,7 +11,7 @@
 		"CHANGELOG.md"
 	],
 	"scripts": {
-		"build": "shx rm -rf ./dist/* && tsc",
+		"build": "shx rm -rf ./dist/* && eslint . && tsc",
 		"test": "tsx test/index.ts",
 		"auri.build": "pnpm build"
 	},

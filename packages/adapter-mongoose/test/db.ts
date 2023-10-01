@@ -71,6 +71,6 @@ export const Key = mongodb.model(
 	)
 );
 
-export const connect = async () => {
+export const connect = async (): Promise<void> => {
 	await mongodb.connect(process.env.MONGODB_URL as any);
 };

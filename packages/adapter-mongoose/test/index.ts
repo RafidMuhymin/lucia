@@ -17,11 +17,11 @@ const createPartialTableQueryHandler = (
 	Model: Model<any>
 ): Pick<TableQueryHandler, "insert" | "clear"> => {
 	return {
-		insert: async (value) => {
+		insert: async (value): Promise<void> => {
 			const sessionDoc = new Model(createMongoValues(value));
 			await sessionDoc.save();
 		},
-		clear: async () => {
+		clear: async (): Promise<void> => {
 			await Model.deleteMany();
 		}
 	};
