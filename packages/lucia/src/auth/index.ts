@@ -15,7 +15,7 @@ import type { UserSchema, SessionSchema, KeySchema } from "./database.js";
 import type { Adapter, SessionAdapter, InitializeAdapter } from "./adapter.js";
 import type { CSRFProtectionConfiguration, Middleware } from "./request.js";
 
-import type { SessionCookieOptions } from "oslo/session";
+import type { SessionCookieConfig } from "oslo/session";
 import type { Cookie } from "oslo/cookie";
 
 export const DEFAULT_SESSION_COOKIE_NAME = "auth_session";
@@ -520,7 +520,7 @@ export type Configuration<
 	middleware?: Middleware;
 	csrfProtection?: boolean | CSRFProtectionConfiguration;
 	sessionExpiresIn?: number;
-	sessionCookie?: SessionCookieOptions;
+	sessionCookie?: SessionCookieConfig;
 	getSessionAttributes?: (databaseSession: SessionSchema) => _SessionAttributes;
 	getUserAttributes?: (databaseUser: UserSchema) => _UserAttributes;
 	passwordHash?: {
