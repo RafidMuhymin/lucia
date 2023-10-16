@@ -1,5 +1,4 @@
-export { lucia } from "./auth/index.js";
-export { DEFAULT_SESSION_COOKIE_NAME } from "./auth/cookie.js";
+export { lucia, DEFAULT_SESSION_COOKIE_NAME } from "./auth/index.js";
 export { LuciaError } from "./auth/error.js";
 export { createKeyId } from "./auth/database.js";
 
@@ -27,5 +26,4 @@ export type {
 	Middleware,
 	AuthRequest
 } from "./auth/request.js";
-export type { Cookie } from "./auth/cookie.js";
 export type { LuciaErrorConstructor } from "./auth/error.js";

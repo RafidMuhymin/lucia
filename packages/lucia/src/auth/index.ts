@@ -1,29 +1,29 @@
-import { DEFAULT_SESSION_COOKIE_NAME, createSessionCookie } from "./cookie.js";
 import { logError } from "../utils/log.js";
 import { generateScryptHash, validateScryptHash } from "../utils/crypto.js";
-import { generateRandomString } from "../utils/nanoid.js";
 import { LuciaError } from "./error.js";
-import { parseCookie } from "../utils/cookie.js";
-import { isValidDatabaseSession } from "./session.js";
 import { AuthRequest, transformRequestContext } from "./request.js";
 import { lucia as defaultMiddleware } from "../middleware/index.js";
 import { debug } from "../utils/debug.js";
-import { isWithinExpiration } from "../utils/date.js";
 import { createAdapter } from "./adapter.js";
 import { createKeyId } from "./database.js";
-import { isAllowedOrigin, safeParseUrl } from "../utils/url.js";
+import { generateRandomString } from "../utils/random.js";
 
-import type { Cookie, SessionCookieConfiguration } from "./cookie.js";
+import { SessionController, SessionCookieController } from "oslo/session";
+import { TimeSpan } from "oslo";
+
 import type { UserSchema, SessionSchema, KeySchema } from "./database.js";
 import type { Adapter, SessionAdapter, InitializeAdapter } from "./adapter.js";
 import type { CSRFProtectionConfiguration, Middleware } from "./request.js";
 
+import type { SessionCookieOptions } from "oslo/session";
+import type { Cookie } from "oslo/cookie";
+
+export const DEFAULT_SESSION_COOKIE_NAME = "auth_session";
+
 export type Session = Readonly<{
 	user: User;
 	sessionId: string;
-	activePeriodExpiresAt: Date;
-	idlePeriodExpiresAt: Date;
-	state: "idle" | "active";
+	expiresAt: Date;
 	fresh: boolean;
 }> &
 	ReturnType<Lucia.Auth["getSessionAttributes"]>;
@@ -57,11 +57,6 @@ const validateConfiguration = (config: Configuration) => {
 
 export class Auth<_Configuration extends Configuration = any> {
 	private adapter: Adapter;
-	private sessionCookieConfig: SessionCookieConfiguration;
-	private sessionExpiresIn: {
-		activePeriod: number;
-		idlePeriod: number;
-	};
 	private csrfProtection: CSRFProtectionConfiguration | boolean;
 	private env: Env;
 	private passwordHash: {
@@ -79,17 +74,23 @@ export class Auth<_Configuration extends Configuration = any> {
 		debugMode: boolean;
 	};
 
+	private sessionController: SessionController;
+	private sessionCookieController: SessionCookieController;
+
 	constructor(config: _Configuration) {
 		validateConfiguration(config);
 
+		this.sessionController = new SessionController(
+			new TimeSpan(config.sessionExpiresIn ?? 30, "ms")
+		);
+		this.sessionCookieController = this.sessionController.sessionCookie({
+			...config.sessionCookie,
+			name: config.sessionCookie?.name ?? DEFAULT_SESSION_COOKIE_NAME,
+			secure: config.env === "PROD"
+		});
+
 		this.adapter = createAdapter(config.adapter);
 		this.env = config.env;
-		this.sessionExpiresIn = {
-			activePeriod:
-				config.sessionExpiresIn?.activePeriod ?? 1000 * 60 * 60 * 24,
-			idlePeriod:
-				config.sessionExpiresIn?.idlePeriod ?? 1000 * 60 * 60 * 24 * 14
-		};
 
 		this.getUserAttributes = (databaseUser) => {
 			const defaultTransform = () => {
@@ -106,7 +107,6 @@ export class Auth<_Configuration extends Configuration = any> {
 			return transform(databaseSession);
 		};
 		this.csrfProtection = config.csrfProtection ?? true;
-		this.sessionCookieConfig = config.sessionCookie ?? {};
 		if (config.passwordHash) {
 			this.passwordHash = config.passwordHash;
 		}
@@ -132,6 +132,23 @@ export class Auth<_Configuration extends Configuration = any> {
 		? _SessionAttributes
 		: never;
 
+	public validateDatabaseSessionState = (
+		databaseSession: SessionSchema,
+		user: User
+	): Session | null => {
+		const baseSession = this.sessionController.validateSessionState(
+			databaseSession.id,
+			new Date(databaseSession.expires)
+		);
+		if (!baseSession) return null;
+		const sessionAttributes = this.getSessionAttributes(databaseSession);
+		return {
+			...sessionAttributes,
+			...baseSession,
+			user
+		};
+	};
+
 	public transformDatabaseUser = (databaseUser: UserSchema): User => {
 		const attributes = this.getUserAttributes(databaseUser);
 		return {
@@ -153,26 +170,6 @@ export class Auth<_Configuration extends Configuration = any> {
 		};
 	};
 
-	public transformDatabaseSession = (
-		databaseSession: SessionSchema,
-		context: {
-			user: User;
-			fresh: boolean;
-		}
-	): Session => {
-		const attributes = this.getSessionAttributes(databaseSession);
-		const active = isWithinExpiration(databaseSession.active_expires);
-		return {
-			...attributes,
-			user: context.user,
-			sessionId: databaseSession.id,
-			activePeriodExpiresAt: new Date(Number(databaseSession.active_expires)),
-			idlePeriodExpiresAt: new Date(Number(databaseSession.idle_expires)),
-			state: active ? "active" : "idle",
-			fresh: context.fresh
-		};
-	};
-
 	private getDatabaseUser = async (userId: string): Promise<UserSchema> => {
 		const databaseUser = await this.adapter.getUser(userId);
 		if (!databaseUser) {
@@ -189,13 +186,6 @@ export class Auth<_Configuration extends Configuration = any> {
 			debug.session.fail("Session not found", sessionId);
 			throw new LuciaError("AUTH_INVALID_SESSION_ID");
 		}
-		if (!isValidDatabaseSession(databaseSession)) {
-			debug.session.fail(
-				`Session expired at ${new Date(Number(databaseSession.idle_expires))}`,
-				sessionId
-			);
-			throw new LuciaError("AUTH_INVALID_SESSION_ID");
-		}
 		return databaseSession;
 	};
 
@@ -205,52 +195,15 @@ export class Auth<_Configuration extends Configuration = any> {
 		if (this.adapter.getSessionAndUser) {
 			const [databaseSession, databaseUser] =
 				await this.adapter.getSessionAndUser(sessionId);
-
 			if (!databaseSession) {
 				debug.session.fail("Session not found", sessionId);
 				throw new LuciaError("AUTH_INVALID_SESSION_ID");
 			}
-
-			if (!isValidDatabaseSession(databaseSession)) {
-				debug.session.fail(
-					`Session expired at ${new Date(
-						Number(databaseSession.idle_expires)
-					)}`,
-					sessionId
-				);
-				throw new LuciaError("AUTH_INVALID_SESSION_ID");
-			}
-
 			return [databaseSession, databaseUser];
 		}
 		const databaseSession = await this.getDatabaseSession(sessionId);
 		const databaseUser = await this.getDatabaseUser(databaseSession.user_id);
 		return [databaseSession, databaseUser];
-	};
-
-	private validateSessionIdArgument = (sessionId: string) => {
-		if (!sessionId) {
-			debug.session.fail("Empty session id");
-			throw new LuciaError("AUTH_INVALID_SESSION_ID");
-		}
-	};
-
-	private getNewSessionExpiration = (sessionExpiresIn?: {
-		activePeriod: number;
-		idlePeriod: number;
-	}): {
-		activePeriodExpiresAt: Date;
-		idlePeriodExpiresAt: Date;
-	} => {
-		const activePeriodExpiresAt = new Date(
-			new Date().getTime() +
-				(sessionExpiresIn?.activePeriod ?? this.sessionExpiresIn.activePeriod)
-		);
-		const idlePeriodExpiresAt = new Date(
-			activePeriodExpiresAt.getTime() +
-				(sessionExpiresIn?.idlePeriod ?? this.sessionExpiresIn.idlePeriod)
-		);
-		return { activePeriodExpiresAt, idlePeriodExpiresAt };
 	};
 
 	public getUser = async (userId: string): Promise<User> => {
@@ -345,61 +298,39 @@ export class Auth<_Configuration extends Configuration = any> {
 		return this.transformDatabaseKey(databaseKey);
 	};
 
-	public getSession = async (sessionId: string): Promise<Session> => {
-		this.validateSessionIdArgument(sessionId);
-		const [databaseSession, databaseUser] =
-			await this.getDatabaseSessionAndUser(sessionId);
-		const user = this.transformDatabaseUser(databaseUser);
-		return this.transformDatabaseSession(databaseSession, {
-			user,
-			fresh: false
-		});
-	};
-
 	public getAllUserSessions = async (userId: string): Promise<Session[]> => {
 		const [user, databaseSessions] = await Promise.all([
 			this.getUser(userId),
 			await this.adapter.getSessionsByUserId(userId)
 		]);
-		const validStoredUserSessions = databaseSessions
-			.filter((databaseSession) => {
-				return isValidDatabaseSession(databaseSession);
+		return databaseSessions
+			.map((databaseSession): Session | null => {
+				return this.validateDatabaseSessionState(databaseSession, user);
 			})
-			.map((databaseSession) => {
-				return this.transformDatabaseSession(databaseSession, {
-					user,
-					fresh: false
-				});
+			.filter((maybeSession): maybeSession is Session => {
+				return maybeSession !== null;
 			});
-		return validStoredUserSessions;
 	};
 
 	public validateSession = async (sessionId: string): Promise<Session> => {
-		this.validateSessionIdArgument(sessionId);
 		const [databaseSession, databaseUser] =
 			await this.getDatabaseSessionAndUser(sessionId);
 		const user = this.transformDatabaseUser(databaseUser);
-		const session = this.transformDatabaseSession(databaseSession, {
-			user,
-			fresh: false
-		});
-		if (session.state === "active") {
-			debug.session.success("Validated session", session.sessionId);
-			return session;
+		const session = this.validateDatabaseSessionState(databaseSession, user);
+		if (!session) {
+			debug.session.fail(
+				`Session expired at ${new Date(Number(databaseSession.expires))}`,
+				sessionId
+			);
+			throw new LuciaError("AUTH_INVALID_SESSION_ID");
 		}
-		const { activePeriodExpiresAt, idlePeriodExpiresAt } =
-			this.getNewSessionExpiration();
-		await this.adapter.updateSession(session.sessionId, {
-			active_expires: activePeriodExpiresAt.getTime(),
-			idle_expires: idlePeriodExpiresAt.getTime()
-		});
-		const renewedDatabaseSession: Session = {
-			...session,
-			idlePeriodExpiresAt,
-			activePeriodExpiresAt,
-			fresh: true
-		};
-		return renewedDatabaseSession;
+		if (session.fresh) {
+			await this.adapter.updateSession(session.sessionId, {
+				expires: session.expiresAt.getTime()
+			});
+		}
+		debug.session.success("Validated session", session.sessionId);
+		return session;
 	};
 
 	public createSession = async (options: {
@@ -407,39 +338,37 @@ export class Auth<_Configuration extends Configuration = any> {
 		userId: string;
 		attributes: Lucia.DatabaseSessionAttributes;
 	}): Promise<Session> => {
-		const { activePeriodExpiresAt, idlePeriodExpiresAt } =
-			this.getNewSessionExpiration();
 		const userId = options.userId;
 		const sessionId = options?.sessionId ?? generateRandomString(40);
-		const attributes = options.attributes;
-		const databaseSession = {
-			...attributes,
-			id: sessionId,
+		const baseSession = this.sessionController.createSession(sessionId);
+		const databaseSession: SessionSchema = {
+			...options.attributes,
+			id: baseSession.sessionId,
 			user_id: userId,
-			active_expires: activePeriodExpiresAt.getTime(),
-			idle_expires: idlePeriodExpiresAt.getTime()
+			expires: baseSession.expiresAt.getTime()
 		} satisfies SessionSchema;
 		const [user] = await Promise.all([
 			this.getUser(userId),
 			this.adapter.setSession(databaseSession)
 		]);
-		return this.transformDatabaseSession(databaseSession, {
-			user,
-			fresh: false
-		});
+		const sessionAttributes = this.getSessionAttributes(databaseSession);
+		return {
+			...sessionAttributes,
+			...baseSession,
+			user
+		};
 	};
 
+	// BREAKING!!
+	// used to return `Session`
 	public updateSessionAttributes = async (
 		sessionId: string,
 		attributes: Partial<Lucia.DatabaseSessionAttributes>
-	): Promise<Session> => {
-		this.validateSessionIdArgument(sessionId);
+	): Promise<void> => {
 		await this.adapter.updateSession(sessionId, attributes);
-		return this.getSession(sessionId);
 	};
 
 	public invalidateSession = async (sessionId: string): Promise<void> => {
-		this.validateSessionIdArgument(sessionId);
 		await this.adapter.deleteSession(sessionId);
 		debug.session.notice("Invalidated session", sessionId);
 	};
@@ -448,87 +377,10 @@ export class Auth<_Configuration extends Configuration = any> {
 		await this.adapter.deleteSessionsByUserId(userId);
 	};
 
-	public deleteDeadUserSessions = async (userId: string): Promise<void> => {
-		const databaseSessions = await this.adapter.getSessionsByUserId(userId);
-		const deadSessionIds = databaseSessions
-			.filter((databaseSession) => {
-				return !isValidDatabaseSession(databaseSession);
-			})
-			.map((databaseSession) => databaseSession.id);
-		await Promise.all(
-			deadSessionIds.map((deadSessionId) => {
-				this.adapter.deleteSession(deadSessionId);
-			})
-		);
-	};
-
-	/**
-	 * @deprecated To be removed in next major release
-	 */
-	public validateRequestOrigin = (request: {
-		url: string | null;
-		method: string | null;
-		headers: {
-			origin: string | null;
-		};
-	}): void => {
-		if (request.method === null) {
-			debug.request.fail("Request method unavailable");
-			throw new LuciaError("AUTH_INVALID_REQUEST");
-		}
-		if (request.url === null) {
-			debug.request.fail("Request url unavailable");
-			throw new LuciaError("AUTH_INVALID_REQUEST");
-		}
-		if (
-			request.method.toUpperCase() !== "GET" &&
-			request.method.toUpperCase() !== "HEAD"
-		) {
-			const requestOrigin = request.headers.origin;
-			if (!requestOrigin) {
-				debug.request.fail("No request origin available");
-				throw new LuciaError("AUTH_INVALID_REQUEST");
-			}
-			try {
-				const url = safeParseUrl(request.url);
-				const allowedSubDomains =
-					typeof this.csrfProtection === "object"
-						? this.csrfProtection.allowedSubDomains ?? []
-						: [];
-				if (
-					url === null ||
-					!isAllowedOrigin(requestOrigin, url.origin, allowedSubDomains)
-				) {
-					throw new LuciaError("AUTH_INVALID_REQUEST");
-				}
-				debug.request.info("Valid request origin", requestOrigin);
-			} catch {
-				debug.request.fail("Invalid origin string", requestOrigin);
-				// failed to parse url
-				throw new LuciaError("AUTH_INVALID_REQUEST");
-			}
-		} else {
-			debug.request.notice("Skipping CSRF check");
-		}
-	};
-
 	public readSessionCookie = (
 		cookieHeader: string | null | undefined
 	): string | null => {
-		if (!cookieHeader) {
-			debug.request.info("No session cookie found");
-			return null;
-		}
-		const cookies = parseCookie(cookieHeader);
-		const sessionCookieName =
-			this.sessionCookieConfig.name ?? DEFAULT_SESSION_COOKIE_NAME;
-		const sessionId = cookies[sessionCookieName] ?? null;
-		if (sessionId) {
-			debug.request.info("Found session cookie", sessionId);
-		} else {
-			debug.request.info("No session cookie found");
-		}
-		return sessionId;
+		return this.sessionCookieController.parseCookieHeader(cookieHeader);
 	};
 
 	public readBearerToken = (
@@ -559,25 +411,25 @@ export class Auth<_Configuration extends Configuration = any> {
 			: never
 	): AuthRequest<Lucia.Auth> => {
 		const middleware = this.middleware as Middleware;
-		const sessionCookieName =
-			this.sessionCookieConfig.name ?? DEFAULT_SESSION_COOKIE_NAME;
 		return new AuthRequest(this, {
 			csrfProtection: this.csrfProtection,
 			requestContext: transformRequestContext(
 				middleware({
 					args,
 					env: this.env,
-					sessionCookieName: sessionCookieName
+					sessionCookieName: this.sessionCookieController.cookieName
 				})
 			)
 		});
 	};
 
 	public createSessionCookie = (session: Session | null): Cookie => {
-		return createSessionCookie(session, {
-			env: this.env,
-			cookie: this.sessionCookieConfig
-		});
+		if (session) {
+			return this.sessionCookieController.createSessionCookie(
+				session.sessionId
+			);
+		}
+		return this.sessionCookieController.createBlankSessionCookie();
 	};
 
 	public createKey = async (options: {
@@ -666,18 +518,9 @@ export type Configuration<
 	env: Env;
 
 	middleware?: Middleware;
-	csrfProtection?:
-		| boolean
-		| {
-				host?: string;
-				hostHeader?: string;
-				allowedSubDomains?: string[] | "*";
-		  };
-	sessionExpiresIn?: {
-		activePeriod: number;
-		idlePeriod: number;
-	};
-	sessionCookie?: SessionCookieConfiguration;
+	csrfProtection?: boolean | CSRFProtectionConfiguration;
+	sessionExpiresIn?: number;
+	sessionCookie?: SessionCookieOptions;
 	getSessionAttributes?: (databaseSession: SessionSchema) => _SessionAttributes;
 	getUserAttributes?: (databaseUser: UserSchema) => _UserAttributes;
 	passwordHash?: {

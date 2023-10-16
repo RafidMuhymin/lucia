@@ -1,6 +1,6 @@
 import { createHeadersFromObject } from "../utils/request.js";
 
-import type { CookieAttributes } from "../utils/cookie.js";
+import type { CookieAttributes } from "oslo/cookie"
 import type {
 	LuciaRequest,
 	Middleware,

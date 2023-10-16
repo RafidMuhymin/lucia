@@ -1,6 +1,6 @@
 import { LuciaError } from "../auth/error.js";
 import scrypt from "../scrypt/index.js";
-import { generateRandomString } from "./nanoid.js";
+import { generateRandomString } from "./random.js";
 
 export const generateScryptHash = async (s: string): Promise<string> => {
 	const salt = generateRandomString(16);

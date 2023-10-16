@@ -10,8 +10,7 @@ export type UserSchema = {
 
 export type SessionSchema = {
 	id: string;
-	active_expires: number;
-	idle_expires: number;
+	expires: number
 	user_id: string;
 } & Lucia.DatabaseSessionAttributes;
 

@@ -2,10 +2,11 @@ import { debug } from "../utils/debug.js";
 
 import { LuciaError } from "./error.js";
 import { createHeadersFromObject } from "../utils/request.js";
-import { isAllowedOrigin, safeParseUrl } from "../utils/url.js";
+
+import { verifyRequestOrigin } from "oslo/request";
 
 import type { Auth, Env, Session } from "./index.js";
-import type { Cookie } from "./cookie.js";
+import type { Cookie } from "oslo/cookie";
 
 export type LuciaRequest = {
 	method: string;
@@ -44,7 +45,7 @@ type MiddlewareRequestContext = Omit<RequestContext, "request"> & {
 export type CSRFProtectionConfiguration = {
 	host?: string;
 	hostHeader?: string;
-	allowedSubDomains?: string[] | "*";
+	allowedSubDomains?: Array<string | null> | "*";
 };
 
 export class AuthRequest<_Auth extends Auth = any> {
@@ -191,14 +192,17 @@ export class AuthRequest<_Auth extends Auth = any> {
 		if (config.host !== undefined) {
 			host = config.host ?? null;
 		} else if (request.url !== null && request.url !== undefined) {
-			host = safeParseUrl(request.url)?.host ?? null;
+			host = request.url
 		} else {
 			host = request.headers.get(config.hostHeader ?? "Host");
 		}
 		debug.request.info("Host", host ?? "(Host unknown)");
 		if (
-			host !== null &&
-			isAllowedOrigin(requestOrigin, host, config.allowedSubDomains ?? [])
+			verifyRequestOrigin({
+				origin,
+				host,
+				allowedSubdomains: config.allowedSubDomains
+			})
 		) {
 			debug.request.info("Valid request origin", requestOrigin);
 			return true;
